@@ -244,8 +244,20 @@ int callValuePush(
 		}
 		return 1;
 
+	/* FIX 2026-09-02: these read through ffi_arg/ffi_sarg, not through the
+	   CallValue union's 64-bit members.
+	   libffi widens any integer return NARROWER than ffi_arg into exactly one
+	   ffi_arg-sized slot, and the same holds for closure arguments (this same
+	   function converts both). sizeof(ffi_arg) is 8 on x86_64 and MEASURED 4 on
+	   wasm32, while CallValue's intptrValue/uintptrValue are int64_t/uint64_t on
+	   wasm. So the old code read four bytes libffi never wrote and skipped the
+	   sign extension - which is why it was correct on x86_64 and wrong only on
+	   wasm. Measured symptoms: a C `return -1` reached Lua as 4294967295, and an
+	   int argument into a Lua callback arrived as garbage (~2.33e15).
+	   ffi_sarg is sign-extended by libffi within the slot, so the narrow read is
+	   the whole fix. On x86_64 this is byte-for-byte what the old code did. */
 	case BOOL_TYPE:
-		lua_pushboolean(L, ret->uintptrValue);	// stack: ..., return boolean
+		lua_pushboolean(L, (int)(*(ffi_arg const *)ret != 0));	// stack: ..., return boolean
 		return 1;
 
 	case ENUM_TYPE:
@@ -253,9 +265,9 @@ int callValuePush(
 	case INT16_TYPE:
 	case INT32_TYPE:
 		if (retCType->is_unsigned) {
-			lua_pushnumber(L, (lua_Number)ret->uintptrValue);	// stack: ..., return number
+			lua_pushnumber(L, (lua_Number)*(ffi_arg const *)ret);	// stack: ..., return number
 		} else {
-			lua_pushnumber(L, (lua_Number)ret->intptrValue);	// stack: ..., return number
+			lua_pushnumber(L, (lua_Number)*(ffi_sarg const *)ret);	// stack: ..., return number
 		}
 		return 1;
 
